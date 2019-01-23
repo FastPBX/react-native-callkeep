@@ -49,7 +49,7 @@ const didPerformDTMFAction = handler => {
     return;
   }
 
-  eventEmitter.addListener(RNCallKeepDidPerformDTMFAction, (data) => { handler(data.number); });
+  eventEmitter.addListener(RNCallKeepDidPerformDTMFAction, (data) => { handler(data.dtmf); });
 };
 
 export const listeners = {
