@@ -72,7 +72,7 @@ RNCallKeep.setup(options);
       
 ## Methods
 
-### setActive
+### setAvailable
 _This feature is available only on Android._
 
 Tell _ConnectionService_ that the device is ready to accept outgoing calls. 
@@ -80,7 +80,7 @@ If not the user will be stuck in the build UI screen without any actions.
 Eg: Call it with `false` when disconnected from the sip client, when your token expires ...
 
 ```js
-RNCallKeep.setActive(true);
+RNCallKeep.setAvailable(true);
 ```
 
 - `active`: boolean
@@ -122,10 +122,13 @@ RNCallKeep.startCall(uuid, number);
   - An `uuid` that should be stored and re-used for `stopCall`.
 - `handle`: string
   - Phone number of the callee
-- `handleType`: string (optional)
+- `handleType`: string (optional, iOS only)
   - `generic`
   - `number` (default)
   - `email`
+- `hasVideo`: boolean (optional, iOS only)
+  - `false` (default)
+  - `true` (you know... when not false)
 - `contactIdentifier`: string (optional)
   - The identifier is displayed in the native call UI, and is typically the name of the call recipient.
 
@@ -140,6 +143,14 @@ RNCallKeep.endCall(uuid);
 
 - `uuid`: string
   - The `uuid` used for `startCall` or `displayIncomingCall`
+
+### setCurrentCallActive
+
+Mark the current call as active (eg: when the callee as answered).
+
+```js
+RNCallKeep.setCurrentCallActive();
+```
 
 
 ### setMutedCall
@@ -271,23 +282,38 @@ RNCallKeep.addEventListener('didDisplayIncomingCall', ({ error }) => {
 A call was muted by the system or the user:
 
 ```js
-RNCallKeep.addEventListener('didPerformSetMutedCallAction', ({ muted }) => {
+RNCallKeep.addEventListener('didPerformSetMutedCallAction', (muted) => {
   
 });
 
 ```
+### - didToggleHoldCallAction
+
+A call was held or unheld by the current user
+
+```js
+RNCallKeep.addEventListener('didToggleHoldCallAction', ({ hold, callUUID }) => {
+  
+});
+```
+
+- `hold` (boolean)
+- `callUUID` (string)
+  - The UUID of the call that is to be answered (iOS only).
+
 ### - didPerformDTMFAction
-_This feature is available only on Android for now._
 
 Used type a number on his dialer
 
 ```js
-RNCallKeep.addEventListener('didPerformDTMFAction', ({ dtmf }) => {
+RNCallKeep.addEventListener('didPerformDTMFAction', ({ dtmf, callUUID }) => {
   
 });
 ```
 
-- `muted` (boolean)
+- `dtmf` (string)
+- `callUUID` (string)
+  - iOS only.
 
 ## Example
 
@@ -320,7 +346,7 @@ class RNCallKeepExample extends React.Component {
 
     try {
       RNCallKeep.setup(options);
-      RNCallKeep.setActive(true); // Only used for Android, see doc above.
+      RNCallKeep.setAvailable(true); // Only used for Android, see doc above.
     } catch (err) {
       console.error('initializeCallKeep error:', err.message);
     }
@@ -375,8 +401,11 @@ class RNCallKeepExample extends React.Component {
   render() {
   }
 }
-
 ```
+
+## Notes
+
+- On iOS, you should call `setup` each time you want to use callKeep.
 
 ## Contributing
 

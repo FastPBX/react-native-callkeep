@@ -17,46 +17,35 @@
 
 package io.wazo.callkeep;
 
+import android.Manifest;
+import android.app.Activity;
+import android.content.BroadcastReceiver;
 import android.content.ComponentName;
 import android.content.Context;
-import android.content.BroadcastReceiver;
+import android.content.Intent;
+import android.content.IntentFilter;
 import android.content.pm.ApplicationInfo;
 import android.content.pm.PackageManager;
-import android.content.IntentFilter;
-import android.content.Intent;
+import android.net.Uri;
+import android.os.Build;
+import android.os.Bundle;
+import android.support.annotation.Nullable;
 import android.support.v4.app.ActivityCompat;
 import android.support.v4.content.ContextCompat;
 import android.support.v4.content.LocalBroadcastManager;
-import android.support.annotation.Nullable;
-
-import android.accounts.AccountManager;
-import android.accounts.Account;
-import android.telecom.DisconnectCause;
 import android.telecom.Connection;
-import android.telecom.PhoneAccountHandle;
+import android.telecom.DisconnectCause;
 import android.telecom.PhoneAccount;
+import android.telecom.PhoneAccountHandle;
 import android.telecom.TelecomManager;
 
-import com.facebook.react.bridge.NativeModule;
+import com.facebook.react.bridge.Arguments;
+import com.facebook.react.bridge.Promise;
 import com.facebook.react.bridge.ReactApplicationContext;
-import com.facebook.react.bridge.ReactContext;
 import com.facebook.react.bridge.ReactContextBaseJavaModule;
 import com.facebook.react.bridge.ReactMethod;
 import com.facebook.react.bridge.WritableMap;
-import com.facebook.react.bridge.Arguments;
-import com.facebook.react.bridge.Promise;
 import com.facebook.react.modules.core.DeviceEventManagerModule.RCTDeviceEventEmitter;
-
-import android.os.Bundle;
-import android.os.Build;
-import android.net.Uri;
-import android.app.Activity;
-import android.Manifest;
-
-import java.util.Map;
-import java.util.HashMap;
-import java.util.List;
-import java.lang.SecurityException;
 
 // @see https://github.com/kbagchiGWC/voice-quickstart-android/blob/9a2aff7fbe0d0a5ae9457b48e9ad408740dfb968/exampleConnectionService/src/main/java/com/twilio/voice/examples/connectionservice/VoiceConnectionServiceActivity.java
 public class RNCallKeepModule extends ReactContextBaseJavaModule {
@@ -77,11 +66,12 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
 
     private static final String E_ACTIVITY_DOES_NOT_EXIST = "E_ACTIVITY_DOES_NOT_EXIST";
     private static final String REACT_NATIVE_MODULE_NAME = "RNCallKeep";
+    private static final String[] permissions = { Manifest.permission.READ_PHONE_STATE, Manifest.permission.CALL_PHONE };
 
     private static TelecomManager telecomManager;
     private static Promise hasPhoneAccountPromise;
     private ReactApplicationContext reactContext;
-    private PhoneAccountHandle pah;
+    private static PhoneAccountHandle handle;
     private boolean isReceiverRegistered = false;
     private VoiceBroadcastReceiver voiceBroadcastReceiver;
 
@@ -90,13 +80,13 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
 
         this.reactContext = reactContext;
 
-        VoiceConnectionService.setActive(false);
+        VoiceConnectionService.setAvailable(false);
 
-        if (isAvailable()) {
+        if (isConnectionServiceAvailable()) {
             this.registerPhoneAccount(this.getAppContext());
             voiceBroadcastReceiver = new VoiceBroadcastReceiver();
             registerReceiver();
-            VoiceConnectionService.setActive(false);
+            VoiceConnectionService.setAvailable(true);
         }
     }
 
@@ -116,7 +106,7 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void displayIncomingCall(String number, String callerName) {
-        if (!this.hasPhoneAccount()) {
+        if (!isConnectionServiceAvailable() || !hasPhoneAccount()) {
             return;
         }
 
@@ -126,27 +116,30 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
         extras.putParcelable(TelecomManager.EXTRA_INCOMING_CALL_ADDRESS, uri);
         extras.putString(EXTRA_CALLER_NAME, callerName);
 
-        telecomManager.addNewIncomingCall(this.pah, extras);
+        telecomManager.addNewIncomingCall(handle, extras);
     }
 
     @ReactMethod
     public void startCall(String number, String callerName) {
-        if (!this.hasPhoneAccount()) {
+        if (!isConnectionServiceAvailable() || !hasPhoneAccount() || !hasPermissions()) {
             return;
         }
 
         Bundle extras = new Bundle();
         Uri uri = Uri.fromParts(PhoneAccount.SCHEME_TEL, number, null);
 
-        extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, this.pah);
-        extras.putString(EXTRA_CALLER_NAME, callerName);
+        Bundle callExtras = new Bundle();
+        callExtras.putString(EXTRA_CALLER_NAME, callerName);
+
+        extras.putParcelable(TelecomManager.EXTRA_PHONE_ACCOUNT_HANDLE, handle);
+        extras.putParcelable(TelecomManager.EXTRA_OUTGOING_CALL_EXTRAS, callExtras);
 
         telecomManager.placeCall(uri, extras);
     }
 
     @ReactMethod
     public void endCall() {
-        if (!hasPhoneAccount()) {
+        if (!isConnectionServiceAvailable() || !hasPhoneAccount()) {
             return;
         }
 
@@ -162,18 +155,21 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
 
     @ReactMethod
     public void checkPhoneAccountPermission(Promise promise) {
-        if (!isAvailable()) {
+        Activity currentActivity = this.getCurrentActivity();
+
+        if (!isConnectionServiceAvailable()) {
             promise.reject(E_ACTIVITY_DOES_NOT_EXIST, "ConnectionService not available for this version of Android.");
             return;
         }
-        if (this.getCurrentActivity() == null) {
+        if (currentActivity == null) {
             promise.reject(E_ACTIVITY_DOES_NOT_EXIST, "Activity doesn't exist");
             return;
         }
 
         hasPhoneAccountPromise = promise;
-        String[] permissions = { Manifest.permission.READ_PHONE_STATE, Manifest.permission.CALL_PHONE };
-        if (!this.checkPermissions(permissions, REQUEST_READ_PHONE_STATE)) {
+
+        if (!this.hasPermissions()) {
+            ActivityCompat.requestPermissions(currentActivity, permissions, REQUEST_READ_PHONE_STATE);
             return;
         }
 
@@ -186,13 +182,28 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
-    public void setActive(Boolean active) {
-        VoiceConnectionService.setActive(active);
+    public void hasPermissions(Promise promise) {
+        promise.resolve(this.hasPermissions());
+    }
+
+    @ReactMethod
+    public void setAvailable(Boolean active) {
+        VoiceConnectionService.setAvailable(active);
+    }
+
+    @ReactMethod
+    public void setCurrentCallActive() {
+        Connection conn = VoiceConnectionService.getConnection();
+        if (conn == null) {
+            return;
+        }
+
+        conn.setActive();
     }
 
     @ReactMethod
     public void openPhoneAccounts() {
-        if (!isAvailable()) {
+        if (!isConnectionServiceAvailable()) {
             return;
         }
 
@@ -212,22 +223,24 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
     }
 
     @ReactMethod
-    public static Boolean isAvailable() {
+    public static Boolean isConnectionServiceAvailable() {
         // PhoneAccount is available since api level 23
         return Build.VERSION.SDK_INT >= 23;
     }
 
     private void registerPhoneAccount(Context appContext) {
+        if (!isConnectionServiceAvailable()) {
+            return;
+        }
+
         ComponentName cName = new ComponentName(this.getAppContext(), VoiceConnectionService.class);
         String appName = this.getApplicationName(appContext);
 
-        this.pah = new PhoneAccountHandle(cName, appName);
+        handle = new PhoneAccountHandle(cName, appName);
 
-        PhoneAccount account = new PhoneAccount.Builder(pah, appName)
+        PhoneAccount account = new PhoneAccount.Builder(handle, appName)
                 .setCapabilities(PhoneAccount.CAPABILITY_CALL_PROVIDER)
                 .build();
-
-        PhoneAccountHandle handle = new PhoneAccountHandle(cName, appName);
 
         telecomManager = (TelecomManager) this.getAppContext().getSystemService(this.getAppContext().TELECOM_SERVICE);
         telecomManager.registerPhoneAccount(account);
@@ -244,7 +257,7 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
         return stringId == 0 ? applicationInfo.nonLocalizedLabel.toString() : appContext.getString(stringId);
     }
 
-    private Boolean checkPermissions(String[] permissions, int id) {
+    private Boolean hasPermissions() {
         Activity currentActivity = this.getCurrentActivity();
 
         boolean hasPermissions = true;
@@ -255,27 +268,11 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
             }
         }
 
-        if (!hasPermissions) {
-            ActivityCompat.requestPermissions(currentActivity, permissions, id);
-        }
-
         return hasPermissions;
     }
 
     private static boolean hasPhoneAccount() {
-        if (!isAvailable()) {
-            return false;
-        }
-
-        List<PhoneAccountHandle> enabledAccounts = telecomManager.getCallCapablePhoneAccounts();
-
-        for (PhoneAccountHandle account : enabledAccounts) {
-            if (account.getComponentName().getClassName().equals(VoiceConnectionService.class.getCanonicalName())) {
-                return true;
-            }
-        }
-
-        return false;
+        return !isConnectionServiceAvailable() ? false : telecomManager.getPhoneAccount(handle).isEnabled();
     }
 
     private void registerReceiver() {
@@ -312,10 +309,12 @@ public class RNCallKeepModule extends ReactContextBaseJavaModule {
                     sendEventToJS("RNCallKeepPerformAnswerCallAction", null);
                     break;
                 case ACTION_HOLD_CALL:
-                    sendEventToJS("RNCallKeepDidPerformHoldAction", null);
+                    args.putBoolean("hold", true);
+                    sendEventToJS("RNCallKeepDidToggleHoldAction", args);
                     break;
                 case ACTION_UNHOLD_CALL:
-                    sendEventToJS("RNCallKeepDidPerformUnHoldAction", null);
+                    args.putBoolean("hold", false);
+                    sendEventToJS("RNCallKeepDidToggleHoldAction", args);
                     break;
                 case ACTION_MUTE_CALL:
                     args.putBoolean("muted", true);
