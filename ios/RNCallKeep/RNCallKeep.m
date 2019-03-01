@@ -24,6 +24,8 @@ static NSString *const RNCallKeepPerformEndCallAction = @"RNCallKeepPerformEndCa
 static NSString *const RNCallKeepDidActivateAudioSession = @"RNCallKeepDidActivateAudioSession";
 static NSString *const RNCallKeepDidDisplayIncomingCall = @"RNCallKeepDidDisplayIncomingCall";
 static NSString *const RNCallKeepDidPerformSetMutedCallAction = @"RNCallKeepDidPerformSetMutedCallAction";
+static NSString *const RNCallKeepPerformPlayDTMFCallAction = @"RNCallKeepDidPerformDTMFAction";
+static NSString *const RNCallKeepDidToggleHoldAction = @"RNCallKeepDidToggleHoldAction";
 
 @implementation RNCallKeep
 {
@@ -56,6 +58,10 @@ RCT_EXPORT_MODULE()
     NSLog(@"[RNCallKeep][dealloc]");
 #endif
     [[NSNotificationCenter defaultCenter] removeObserver:self];
+
+    if (self.callKeepProvider != nil) {
+        [self.callKeepProvider invalidate];
+    }
 }
 
 // Override method of RCTEventEmitter
@@ -67,7 +73,9 @@ RCT_EXPORT_MODULE()
              RNCallKeepPerformEndCallAction,
              RNCallKeepDidActivateAudioSession,
              RNCallKeepDidDisplayIncomingCall,
-             RNCallKeepDidPerformSetMutedCallAction
+             RNCallKeepDidPerformSetMutedCallAction,
+             RNCallKeepPerformPlayDTMFCallAction,
+             RNCallKeepDidToggleHoldAction
              ];
 }
 
@@ -121,11 +129,10 @@ RCT_EXPORT_METHOD(displayIncomingCall:(NSString *)uuidString
     CXCallUpdate *callUpdate = [[CXCallUpdate alloc] init];
     callUpdate.remoteHandle = [[CXHandle alloc] initWithType:_handleType value:handle];
     callUpdate.supportsDTMF = YES;
-    // TODO: Holding
-    callUpdate.supportsHolding = NO;
-    callUpdate.supportsGrouping = NO;
-    callUpdate.supportsUngrouping = NO;
-    callUpdate.hasVideo = hasVideo;
+    callUpdate.supportsHolding = YES;
+    callUpdate.supportsGrouping = YES;
+    callUpdate.supportsUngrouping = YES;
+    callUpdate.hasVideo = NO;
     callUpdate.localizedCallerName = localizedCallerName;
 
     [self.callKeepProvider reportNewIncomingCallWithUUID:uuid update:callUpdate completion:^(NSError * _Nullable error) {
@@ -241,9 +248,9 @@ RCT_EXPORT_METHOD(setMutedCall:(NSString *)uuidString muted:(BOOL)muted)
                 CXCallUpdate *callUpdate = [[CXCallUpdate alloc] init];
                 callUpdate.remoteHandle = startCallAction.handle;
                 callUpdate.supportsDTMF = YES;
-                callUpdate.supportsHolding = NO;
-                callUpdate.supportsGrouping = NO;
-                callUpdate.supportsUngrouping = NO;
+                callUpdate.supportsHolding = YES;
+                callUpdate.supportsGrouping = YES;
+                callUpdate.supportsUngrouping = YES;
                 callUpdate.hasVideo = NO;
                 [self.callKeepProvider reportCallWithUUID:startCallAction.callUUID updated:callUpdate];
             }
@@ -290,7 +297,7 @@ RCT_EXPORT_METHOD(setMutedCall:(NSString *)uuidString muted:(BOOL)muted)
 #endif
     CXProviderConfiguration *providerConfiguration = [[CXProviderConfiguration alloc] initWithLocalizedName:_settings[@"appName"]];
     providerConfiguration.supportsVideo = YES;
-    providerConfiguration.maximumCallGroups = 1;
+    providerConfiguration.maximumCallGroups = 3;
     providerConfiguration.maximumCallsPerCallGroup = 1;
     providerConfiguration.supportedHandleTypes = [NSSet setWithObjects:[NSNumber numberWithInteger:CXHandleTypePhoneNumber], [NSNumber numberWithInteger:CXHandleTypeEmailAddress], [NSNumber numberWithInteger:CXHandleTypeGeneric], nil];
     if (_settings[@"imageName"]) {
@@ -384,6 +391,11 @@ continueUserActivity:(NSUserActivity *)userActivity
     return NO;
 }
 
++ (BOOL)requiresMainQueueSetup
+{
+    return YES;
+}
+
 - (void)handleStartCallNotification:(NSNotification *)notification
 {
 #ifdef DEBUG
@@ -446,11 +458,24 @@ continueUserActivity:(NSUserActivity *)userActivity
     [action fulfill];
 }
 
-- (void)provider:(CXProvider *)provider performSetHeldCallAction:(CXSetHeldCallAction *)action
+-(void)provider:(CXProvider *)provider performSetHeldCallAction:(CXSetHeldCallAction *)action
 {
 #ifdef DEBUG
     NSLog(@"[RNCallKeep][CXProviderDelegate][provider:performSetHeldCallAction]");
 #endif
+    NSString *callUUID = [self containsLowerCaseLetter:action.callUUID.UUIDString] ? action.callUUID.UUIDString : [action.callUUID.UUIDString lowercaseString];
+
+    [self sendEventWithName:RNCallKeepDidToggleHoldAction body:@{ @"hold": @(action.onHold), @"callUUID": callUUID }];
+    [action fulfill];
+}
+
+- (void)provider:(CXProvider *)provider performPlayDTMFCallAction:(CXPlayDTMFCallAction *)action {
+#ifdef DEBUG
+    NSLog(@"[RNCallKeep][CXProviderDelegate][provider:performPlayDTMFCallAction]");
+#endif
+    NSString *callUUID = [self containsLowerCaseLetter:action.callUUID.UUIDString] ? action.callUUID.UUIDString : [action.callUUID.UUIDString lowercaseString];
+    [self sendEventWithName:RNCallKeepPerformPlayDTMFCallAction body:@{ @"digits": action.digits, @"callUUID": callUUID }];
+    [action fulfill];
 }
 
 - (void)provider:(CXProvider *)provider timedOutPerformingAction:(CXAction *)action
